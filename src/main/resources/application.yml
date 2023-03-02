@@ -3,10 +3,10 @@ spring:
     oracle:
       url: jdbc:oracle:thin:@localhost:1521:xe
       username : test1
-      password : oracle
+      password : 1234
       driver-class-name: oracle.jdbc.OracleDriver
     agens:
-      url: jdbc:postgresql://localhost:6434/agens
+      url: jdbc:postgresql://localhost:6434/agens_migration
       username: agens
       password : 1234
       driver-class-name: org.postgresql.Driver

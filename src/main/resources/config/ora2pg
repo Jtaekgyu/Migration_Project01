@@ -1,0 +1,7 @@
+#!/bin/bash
+
+export ORACLE_HOME=/u01/app/oracle/product/11.2.0/xe
+export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH
+export PATH=$ORACLE_HOME/bin:$PATH
+
+ora2pg -c src/main/resources/config/config_file.conf -i src/main/resources/sql/input_file.sql -o src/main/resources/sql/output_file.sql
