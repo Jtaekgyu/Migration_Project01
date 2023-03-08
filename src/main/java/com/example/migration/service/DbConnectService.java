@@ -93,10 +93,10 @@ public class DbConnectService {
         }
     }
 
-    public Object testMigration(MigrationReqDto mgReqDto) {
-        Statement stmt = null;
-        PreparedStatement pstmt = null;
-        PreparedStatement pstmt2 = null;
+    public Object testMigration(MigrationReqDto mgReqDto) throws SQLException{
+        Statement posgresStmt = null;
+        PreparedStatement oraPstmt = null;
+        PreparedStatement oraPstmt2 = null;
         Connection oraConn = null;
         Connection posConn = null;
         ResultSet rs = null;
@@ -127,22 +127,19 @@ public class DbConnectService {
                     mgReqDto.getOraReqDto().getSid(), mgReqDto.getOraReqDto().getUsername(), mgReqDto.getOraReqDto().getPassword());
             posConn = POSdbConnect();
 
-            if(pstmt == null)
-                pstmt = oraConn.prepareStatement(query); // prepareStatement를 호출하여 pstmt 변수에 쿼리를 실행할 객체를 할당한다.
-            pstmt.setString(1, mgReqDto.getOraReqDto().getUsername());
-//            for(int i = 0; i < tableList.size(); i++){
-//                pstmt.setString(i + 2, tableList.get(i));
-//            }
-            rs = pstmt.executeQuery(); // executeQuery로 쿼리를 실행하고 그 값을 rs에 할당한다. () 여기안에 쿼리의 final String 값넣어도 될듯(물론 그걸로 처음부터 과정을 해야함)
+            if(oraPstmt == null)
+                oraPstmt = oraConn.prepareStatement(query); // prepareStatement를 호출하여 pstmt 변수에 쿼리를 실행할 객체를 할당한다.
+            oraPstmt.setString(1, mgReqDto.getOraReqDto().getUsername());
+
+            rs = oraPstmt.executeQuery(); // executeQuery로 쿼리를 실행하고 그 값을 rs에 할당한다. () 여기안에 쿼리의 final String 값넣어도 될듯(물론 그걸로 처음부터 과정을 해야함)
             while (rs.next()){
                 String table = rs.getString(1); // 여기서 table 목록 조회했으니까 이거가지고 select 하자
-                System.out.println("table : " + table);
 
                 sb.setLength(0); // sb를 초기화 하는 가장 빠른 방법
                 // 해당 쿼리 조회하면 table별 column_name, constraint_type, search_condition을 사용하면 되는데
                 // 제약조건이 여러 개 있으면 column_name은 중복 되므로 column_name들을 set에 담자 그리고 while 돌떄 마다 set을 초기화 해주자.
 //                sb.append("SELECT TABLE_NAME, COLUMN_NAME FROM all_tab_cols WHERE OWNER ='"+mgReqDto.getOraReqDto().getUsername()+"' AND TABLE_NAME = '"+table+"'");
-                sb.append("SELECT tabcols.column_id, tabcols.column_name, tabcols.data_type || '(' || tabcols.data_length || ')' as data_type_length, cons.constraint_type, cons.constraint_name, cons.search_condition\n" +
+                sb.append("SELECT tabcols.column_id, tabcols.column_name, tabcols.data_type, tabcols.data_length, cons.constraint_type, cons.constraint_name, cons.search_condition\n" +
                         "FROM all_tab_cols tabcols\n" +
                         "LEFT JOIN all_cons_columns cols\n" +
                         "  ON tabcols.owner = cols.owner\n" +
@@ -155,18 +152,19 @@ public class DbConnectService {
                         " AND tabcols.table_name = '"+table+"'\n" +
                         "ORDER BY tabcols.column_id"); // 뒤에 ; 찍으면 ORA-00911: invalid character 에러 발생한다..
                 query = sb.toString();
-                if(pstmt2 == null) // 여기서 안들어가서 그러네
-                    pstmt2 = oraConn.prepareStatement(query);
+                if(oraPstmt2 == null) // 여기서 안들어가서 그러네
+                    oraPstmt2 = oraConn.prepareStatement(query);
 
                 // 위 에서 조회한 column_name, constraint_type, search_conditiond을 사용해서 create 문을 만든다.
                 // 테이블을 create할 때는
                 StringBuilder createSb = new StringBuilder();
                 createSb.append("CREATE TABLE " +table+" (\n");
-                rs2 = pstmt2.executeQuery();
+                rs2 = oraPstmt2.executeQuery();
 
                 Set<String> columNameSet = new HashSet<>();
                 String tmpColumnName;
                 String dataType;
+                String dataLength;
                 String constraintType;
                 String searchCondition;
                 String enter = null;
@@ -175,11 +173,15 @@ public class DbConnectService {
                 int idx = 1;
                 while (rs2.next()){
                     tmpColumnName = rs2.getString("COLUMN_NAME"); // 값이 덮어 씌워지는 이유는 pstmt 객체를 초기화 하지않아서 그랬다.
-                    dataType = rs2.getString("DATA_TYPE_LENGTH");
+                    dataType = rs2.getString("DATA_TYPE");
+                    dataLength = rs2.getString("DATA_LENGTH");
                     constraintType = rs2.getString("CONSTRAINT_TYPE");
                     searchCondition = rs2.getString("SEARCH_CONDITION");
 
-                    if( !columNameSet.contains(tmpColumnName) && idx >= 2){ // set에 없거나 2반쩨 칼럼부터
+                    // 이렇게 Set에 ColumnName이 없고 두 번째 컬럼부터 ,엔터를 입력하면 쿼리 형식이 맞는다
+                    // 현재 쿼리가 컬럼을 제약조건 마다 조회하기 때문에 한 컬럼에 제약조건이 여러개 있으면 일일이 행으로 조회된다.
+                    // 그러므로 이전에 set에 행이 있으면 여러번 조회되는 컬럼이기 때문에 ",\n" 를입력하지 않는다.
+                    if( !columNameSet.contains(tmpColumnName) && idx >= 2){
                         enter = ",\n";
                     } else {
                         enter = "";
@@ -188,10 +190,19 @@ public class DbConnectService {
                     if(enter !=null && enter.equals(",\n")){
                         createSb.append(enter);
                     }
-
                     if( columNameSet.add(tmpColumnName) ){ // 존재하지 않으면 true, 존재하면 false를 반환
                         createSb.append(tmpColumnName);
-                        createSb.append(" "+dataType);
+                        String realDataType;
+                        switch (dataType) {
+                            case "NUMBER" : dataType = "INTEGER";
+                                break;
+                            case "VARCHAR2" : dataType = "VARCHAR";
+                                break;
+                        }
+                        if(!dataType.equals("INTEGER"))
+                            createSb.append(" "+dataType+"("+dataLength+")");
+                        else
+                            createSb.append(" "+dataType);
                     }
                     // 제약조건이 없으면 다음 컬럼을 탐색한다.
                     if(constraintType == null){
@@ -214,33 +225,33 @@ public class DbConnectService {
                     idx++;
                 }
                 createSb.append("\n);");
-                System.out.println("~~~createSb : \n" + createSb);
+                System.out.println("\n" + createSb);
                 columNameSet.clear();
                 rs2.close();
-                pstmt2 = null; // ★★★ 이거 해주니까 되네.....
+                oraPstmt2 = null; // ★★★ 이거 해주니까 되네.....
 //                ResultSetMetaData rsmd = rs2.getMetaData();
 //                int columnCount = rsmd.getColumnCount();
-                /*for(int i = 1; i <= columnCount; i++){
-                    String columnName = rsmd.getColumnName(i);
-                    String columnTypeName = rsmd.getColumnTypeName(i); // 이걸로 데이터 타입 뽑자
-                    int columLeng = rsmd.getColumnDisplaySize(i); // 컬럼의 길이(데이터의 길이 아님)
-                    int isNull = rsmd.isNullable(i); // 0: Null허용안함, 1 : Null허용, 2: 알 수 없음
-                    System.out.println("~~Column name: " + columnName +", Type : " +columnTypeName+ ", columLeng : " + columLeng + ", isNull : " + isNull);
-                    // 여기서 oracle 타입을 postgresql로 변경해야한다.
 
-//                    switch (columnName) {
-//                        case "NUMBER" :
-//                    }
-//                    createSb.append(columnName+)
-                }*/
                 // 이 meta데이터 추추한걸
                 // postgresql로 바로 create할건지, 아니면 제약조건까지 조회한다음에 create할건지
                 // 물론 순서는 테이블 create, 데이터 insert, 테이블에 제약조건 추가
-
+                // set이 지워지니까 여기서 postgresql 로 쿼리 날려야한다.
+                // try문 바로 다음에 postgresql 연결함
+                if(posgresStmt == null){
+                    posgresStmt = posConn.createStatement();
+                    System.out.println("~~~ posgresStmt == null");
+                }
+                posgresStmt.execute(String.valueOf(createSb));
             }
 
         } catch (SQLException e) {
             throw new RuntimeException(e);
+        } finally {
+            rs.close();
+            oraPstmt.close();
+//            oraPstmt2.close();
+            oraConn.close();
+//            posgresStmt.close();
         }
         return null;
     }
