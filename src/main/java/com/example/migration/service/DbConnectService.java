@@ -1,14 +1,12 @@
 package com.example.migration.service;
 
-import com.example.migration.config.ClientDatabase;
-import com.example.migration.config.ClientDatasource;
 import com.example.migration.controller.dto.request.MigrationReqDto;
 import com.example.migration.controller.dto.request.OracleInfoReqDto;
+import com.example.migration.queryHelper.OracleQueryHelper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
-import java.io.*;
 import java.sql.*;
 import java.util.*;
 
@@ -66,18 +64,20 @@ public class DbConnectService {
     }
 
     public Object getTableList(OracleInfoReqDto oraReqDto){
-        Statement stmt = null;
+        OracleQueryHelper queryHelper = new OracleQueryHelper();
+        PreparedStatement pstmt = null;
         Connection oraConn = null;
         ResultSet rs = null;
+        List<String> oraTableListResDtos = new ArrayList<>();
+
         try {
             oraConn = ORAdbConnect(oraConn, oraReqDto.getHost(), oraReqDto.getPort(),
                     oraReqDto.getSid(), oraReqDto.getUsername(), oraReqDto.getPassword());
-            if(stmt ==null)
-                stmt = oraConn.createStatement();
-//            rs = stmt.executeQuery("SELECT * FROM ALL_OBJECTS WHERE OWNER = 'TEST1'");
-            rs = stmt.executeQuery("SELECT table_name FROM all_tables WHERE owner = 'TEST1'");
-//            List<OraTableListResDto> oraTableListResDtos = new ArrayList<>();
-            List<String> oraTableListResDtos = new ArrayList<>();
+            if(pstmt == null)
+                pstmt = oraConn.prepareStatement(OracleQueryHelper.SELECT_ALL_TABLES);
+            pstmt.setString(1, oraReqDto.getUsername());
+
+            rs = pstmt.executeQuery();
             while (rs.next()){
 //                String objectType = rs.getString("OBJECT_TYPE");
                 String objectName = rs.getString("TABLE_NAME");
@@ -93,14 +93,12 @@ public class DbConnectService {
         }
     }
 
-    public Object testMigration(MigrationReqDto mgReqDto) throws SQLException{
+    public Object oracleToPostgresMigration(MigrationReqDto mgReqDto) throws SQLException{
         Statement posgresStmt = null;
         PreparedStatement oraPstmt = null;
-        PreparedStatement oraPstmt2 = null;
         Connection oraConn = null;
         Connection posConn = null;
         ResultSet rs = null;
-        ResultSet rs2 = null;
         String query = null;
         List<String> tableList = new ArrayList<>();
 
@@ -109,57 +107,27 @@ public class DbConnectService {
         }
 
         // 테이블 목록을 조회한다.(그래도 table이 스키마에 있는지 확인해야하니까 조건문 사용한다.)
-        StringBuilder sb = new StringBuilder();
-        sb.append("SELECT table_name FROM all_tables WHERE owner = ? ");
-// mgReqDto.getOraReqDto().getUsername()
-        sb.append("AND TABLE_NAME IN (");
-        for (int i = 0; i < tableList.size(); i++) {
-            if (i > 0) {
-                sb.append(", ");
-            }
-            sb.append("'" + tableList.get(i) + "'");
-        }
-        sb.append(")");
-        query = sb.toString();
-
+        StringBuilder sb = new StringBuilder(); // 지금은 sb한 의미가 사라짐
+        StringBuilder createSb = new StringBuilder();
         try {
             oraConn = ORAdbConnect(oraConn, mgReqDto.getOraReqDto().getHost(), mgReqDto.getOraReqDto().getPort(),
                     mgReqDto.getOraReqDto().getSid(), mgReqDto.getOraReqDto().getUsername(), mgReqDto.getOraReqDto().getPassword());
             posConn = POSdbConnect();
 
-            if(oraPstmt == null)
-                oraPstmt = oraConn.prepareStatement(query); // prepareStatement를 호출하여 pstmt 변수에 쿼리를 실행할 객체를 할당한다.
-            oraPstmt.setString(1, mgReqDto.getOraReqDto().getUsername());
-
-            rs = oraPstmt.executeQuery(); // executeQuery로 쿼리를 실행하고 그 값을 rs에 할당한다. () 여기안에 쿼리의 final String 값넣어도 될듯(물론 그걸로 처음부터 과정을 해야함)
-            while (rs.next()){
-                String table = rs.getString(1); // 여기서 table 목록 조회했으니까 이거가지고 select 하자
-
+            for(String table : tableList){
                 sb.setLength(0); // sb를 초기화 하는 가장 빠른 방법
-                // 해당 쿼리 조회하면 table별 column_name, constraint_type, search_condition을 사용하면 되는데
                 // 제약조건이 여러 개 있으면 column_name은 중복 되므로 column_name들을 set에 담자 그리고 while 돌떄 마다 set을 초기화 해주자.
-//                sb.append("SELECT TABLE_NAME, COLUMN_NAME FROM all_tab_cols WHERE OWNER ='"+mgReqDto.getOraReqDto().getUsername()+"' AND TABLE_NAME = '"+table+"'");
-                sb.append("SELECT tabcols.column_id, tabcols.column_name, tabcols.data_type, tabcols.data_length, cons.constraint_type, cons.constraint_name, cons.search_condition\n" +
-                        "FROM all_tab_cols tabcols\n" +
-                        "LEFT JOIN all_cons_columns cols\n" +
-                        "  ON tabcols.owner = cols.owner\n" +
-                        " AND tabcols.table_name = cols.table_name\n" +
-                        " AND tabcols.column_name = cols.column_name\n" +
-                        "LEFT JOIN all_constraints cons\n" +
-                        "  ON cols.owner = cons.owner\n" +
-                        " AND cols.constraint_name = cons.constraint_name\n" +
-                        "WHERE tabcols.owner = '"+mgReqDto.getOraReqDto().getUsername()+"'\n" +
-                        " AND tabcols.table_name = '"+table+"'\n" +
-                        "ORDER BY tabcols.column_id"); // 뒤에 ; 찍으면 ORA-00911: invalid character 에러 발생한다..
+                sb.append(OracleQueryHelper.SELECT_TABLE_INFO); // 뒤에 ; 찍으면 ORA-00911: invalid character 에러 발생한다..
                 query = sb.toString();
-                if(oraPstmt2 == null) // 여기서 안들어가서 그러네
-                    oraPstmt2 = oraConn.prepareStatement(query);
+                if(oraPstmt == null) // 여기서 안들어가서 그러네
+                    oraPstmt = oraConn.prepareStatement(query);
 
+                oraPstmt.setString(1, mgReqDto.getOraReqDto().getUsername());
+                oraPstmt.setString(2, table);
                 // 위 에서 조회한 column_name, constraint_type, search_conditiond을 사용해서 create 문을 만든다.
                 // 테이블을 create할 때는
-                StringBuilder createSb = new StringBuilder();
                 createSb.append("CREATE TABLE " +table+" (\n");
-                rs2 = oraPstmt2.executeQuery();
+                rs = oraPstmt.executeQuery();
 
                 Set<String> columNameSet = new HashSet<>();
                 String tmpColumnName;
@@ -171,12 +139,12 @@ public class DbConnectService {
                 StringBuilder constraintSb = new StringBuilder();
                 boolean chk = true;
                 int idx = 1;
-                while (rs2.next()){
-                    tmpColumnName = rs2.getString("COLUMN_NAME"); // 값이 덮어 씌워지는 이유는 pstmt 객체를 초기화 하지않아서 그랬다.
-                    dataType = rs2.getString("DATA_TYPE");
-                    dataLength = rs2.getString("DATA_LENGTH");
-                    constraintType = rs2.getString("CONSTRAINT_TYPE");
-                    searchCondition = rs2.getString("SEARCH_CONDITION");
+                while (rs.next()){
+                    tmpColumnName = rs.getString("COLUMN_NAME"); // 값이 덮어 씌워지는 이유는 pstmt 객체를 초기화 하지않아서 그랬다.
+                    dataType = rs.getString("DATA_TYPE");
+                    dataLength = rs.getString("DATA_LENGTH");
+                    constraintType = rs.getString("CONSTRAINT_TYPE");
+                    searchCondition = rs.getString("SEARCH_CONDITION");
 
                     // 이렇게 Set에 ColumnName이 없고 두 번째 컬럼부터 ,엔터를 입력하면 쿼리 형식이 맞는다
                     // 현재 쿼리가 컬럼을 제약조건 마다 조회하기 때문에 한 컬럼에 제약조건이 여러개 있으면 일일이 행으로 조회된다.
@@ -196,12 +164,20 @@ public class DbConnectService {
                         switch (dataType) {
                             case "NUMBER" : dataType = "INTEGER";
                                 break;
+                            case "CHAR" : dataType = "CHAR";
+                                break;
+                            case  "NCHAR" : dataType = "CHAR";
+                                break;
+                            case "VARCHAR" : dataType = "VARCHAR";
+                                break;
                             case "VARCHAR2" : dataType = "VARCHAR";
+                                break;
+                            case  "NVARCHAR2" :dataType = "VARCHAR";
                                 break;
                         }
                         if(!dataType.equals("INTEGER"))
                             createSb.append(" "+dataType+"("+dataLength+")");
-                        else
+                        else // 오라클에서 타입이 INTEGER 이면 (Length)안붙임
                             createSb.append(" "+dataType);
                     }
                     // 제약조건이 없으면 다음 컬럼을 탐색한다.
@@ -227,29 +203,23 @@ public class DbConnectService {
                 createSb.append("\n);");
                 System.out.println("\n" + createSb);
                 columNameSet.clear();
-                rs2.close();
-                oraPstmt2 = null; // ★★★ 이거 해주니까 되네.....
+                rs.close();
+                oraPstmt = null; // ★★★ 이거 해주니까 되네.....
 //                ResultSetMetaData rsmd = rs2.getMetaData();
 //                int columnCount = rsmd.getColumnCount();
-
-                // 이 meta데이터 추추한걸
-                // postgresql로 바로 create할건지, 아니면 제약조건까지 조회한다음에 create할건지
-                // 물론 순서는 테이블 create, 데이터 insert, 테이블에 제약조건 추가
-                // set이 지워지니까 여기서 postgresql 로 쿼리 날려야한다.
-                // try문 바로 다음에 postgresql 연결함
                 if(posgresStmt == null){
                     posgresStmt = posConn.createStatement();
-                    System.out.println("~~~ posgresStmt == null");
+//                    System.out.println("~~~ posgresStmt == null");
                 }
                 posgresStmt.execute(String.valueOf(createSb));
+                createSb.setLength(0);
             }
 
         } catch (SQLException e) {
             throw new RuntimeException(e);
         } finally {
-            rs.close();
-            oraPstmt.close();
-//            oraPstmt2.close();
+//            rs.close();
+//            oraPstmt.close();
             oraConn.close();
 //            posgresStmt.close();
         }
@@ -300,131 +270,4 @@ public class DbConnectService {
         }
     }
 
-    /*public String generateDDL(Statement stmt, String objectType, String objectName) {
-        try {
-            ResultSet rs = stmt.executeQuery("SELECT DBMS_METADATA.GET_DDL('" + objectType + "','" + objectName + "') FROM DUAL");
-            if(rs.next()){
-                String ddl = rs.getString(1);
-            }
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
-    }*/
-
-
-    /*private String generateDDL(Statement stmt, String objectType, String objectName) {
-        try { // rs에는 각 objectType과 objectName 조건에 맞는 DDL(CREATE쿼리)이 생성된다.
-            ResultSet rs = stmt.executeQuery("SELECT DBMS_METADATA.GET_DDL('" + objectType + "','" + objectName + "') FROM DUAL");
-            *//*if(rs.next()){
-                Object result = rs.getString(1); // 확인용
-                return rs.getString(1);
-            }*//*
-            if(rs.next()){
-                String ddl = rs.getString(1);
-                try {
-                    File file = new File("src/main/resources/sql/input_file.sql");
-                    FileWriter fw = new FileWriter(file, true); // true 파라미터는 append 모드로 설정합니다.
-                    fw.write(ddl);
-                    fw.close();
-
-                    // ora2pg 명령어를 실행하기 위한 ProcessBuilder 객체 생성
-                    ProcessBuilder pb = new ProcessBuilder("src/main/resources/config/ora2pg", "-c", "src/main/resources/config/config_file.conf", "-i", "src/main/resources/sql/input_file.sql", "-o", "src/main/resources/sql/output_file.sql");
-
-                    // ora2pg 명령어 실행
-                    Process p = pb.start();
-
-                    // ora2pg 명령어 실행이 완료될 때까지 대기
-                    p.waitFor();
-
-                    // PostgreSQL DDL 읽기
-                    BufferedReader br = new BufferedReader(new FileReader("src/main/resources/sql/output_file.sql"));
-
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        sb.append(line).append("\n");
-                    }
-                    br.close();
-
-                    return sb.toString();
-                } catch (IOException | InterruptedException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
-        return null;
-    }*/
-
-    /*public void fileSave(Statement stmt, String objectType, String objectName){
-        try {
-            ResultSet rs = stmt.executeQuery("SELECT DBMS_METADATA.GET_DDL('" + objectType + "','" + objectName + "') FROM DUAL");
-
-            if(rs.next()){
-                String ddl = rs.getString(1);
-                FileWriter fw = null;
-                try {
-                    fw = new FileWriter("input_file.sql");
-                    fw.write(ddl);
-                    fw.close();
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
-    }*/
-
-    /*public Object testMigration3byOra2pg(OracleInfoReqDto oracleInfoReqDto) throws SQLException {
-        DataSource dataSource = null;
-        dataSource = ClientDatasource.getDatasource(ClientDatabase.ORACLE);
-
-        // ora2pg 연결 정보 설정
-        String ora2pgUrl = "jdbc:postgresql://localhost:6434/agens_migration";
-        Properties ora2pgProps = new Properties();
-        ora2pgProps.setProperty("user", "agens");
-        ora2pgProps.setProperty("password", "1234");
-        ora2pgProps.setProperty("ssl", "false");
-
-        Connection ora2pgConn = null;
-        Connection dataSourceConn = null;
-        try {
-            // ora2pg 연결 생성
-            ora2pgConn = DriverManager.getConnection(ora2pgUrl, ora2pgProps);
-
-            // 데이터 소스 연결 생성
-            dataSourceConn = dataSource.getConnection(); // 지금은 오라클
-
-            // 데이터 이전을 위한 ora2pg 세션 시작
-            Statement ora2pgStmt = ora2pgConn.createStatement();
-            ora2pgStmt.execute("BEGIN");
-
-            // 데이터 이전 쿼리 작성 및 실행
-            String sql = "SELECT * FROM TBL_TEST1";
-            Statement dataSourceStmt = dataSourceConn.createStatement();
-            ResultSet rs = dataSourceStmt.executeQuery(sql);
-            while (rs.next()) {
-                // 데이터를 ora2pg로 전송
-                // 이전 쿼리에 대한 예시입니다.
-                ora2pgStmt.execute(String.format(
-                        "INSERT INTO TBL_PG_TEST1 (id, name, content) VALUES (%d, '%s', %s)",
-                        rs.getInt("id"),
-                        rs.getString("name"),
-                        rs.getString("content")
-                ));
-            }
-
-            // ora2pg 세션 종료
-            ora2pgStmt.execute("COMMIT");
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        } finally {
-            // 연결 종료
-            ora2pgConn.close();
-            dataSourceConn.close();
-        }
-        return null; // 일단 null로 리턴
-    }*/
 }

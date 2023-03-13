@@ -47,8 +47,8 @@ public class DbConnectController {
     }
 
     @PostMapping("/migration")
-    public ResponseEntity<?> migration(@RequestBody MigrationReqDto migrationReqDto) throws SQLException {
-        Object result = dbConnectService.testMigration(migrationReqDto);
+    public ResponseEntity<?> oracleToPostgresMigration(@RequestBody MigrationReqDto migrationReqDto) throws SQLException {
+        Object result = dbConnectService.oracleToPostgresMigration(migrationReqDto);
         return ResponseEntity.ok(result);
     }
 
